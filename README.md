@@ -1,139 +1,70 @@
-# New IPO Alert
+# IPO Alert System
 
-A Python script to monitor new IPO listings on [NepseAlpha](https://www.nepsealpha.com/investment-calandar/ipo) and send alerts via Telegram when new entries are detected.
+A Python script to monitor new IPO listings on nepsealpha.com and send Telegram alerts when new offerings are detected.
 
 ## Features
 
-- Scrapes IPO data from NepseAlpha website
-- Stores previously seen IPOs in a SQLite database
-- Detects new IPO listings automatically
-- Sends formatted alerts to Telegram
-- Runs checks periodically every 2 hours
-
-## Requirements
-
-- Python 3.7 or higher
-- Dependencies listed in `requirements.txt`
-- Telegram Bot Token (from @BotFather)
-- Telegram Chat ID (your chat with the bot)
+- Monitors the nepsealpha.com website for new IPO listings
+- Bypasses Cloudflare protection using multiple methods
+- Sends alerts via Telegram when new IPOs are detected
+- Stores IPO data in SQLite database to track new listings
+- Runs on a schedule to check for updates periodically
 
 ## Installation
 
-1. Clone this repository or download the files
+1. Clone this repository:
+   ```
+   git clone https://github.com/yourusername/new-ipo-alert.git
+   cd new-ipo-alert
+   ```
+
 2. Install the required dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
 
-```bash
-pip install -r requirements.txt
-```
+3. Install Playwright browsers (optional, but recommended for fallback):
+   ```
+   playwright install firefox
+   ```
 
-3. Create a `.env` file based on the `.env.example` template:
-
-```bash
-cp .env.example .env
-```
-
-4. Edit the `.env` file and add your Telegram bot token and chat ID:
-
-```
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
-TELEGRAM_CHAT_ID=your_telegram_chat_id_here
-```
-
-## Getting Telegram Bot Token and Chat ID
-
-1. On Telegram, search for `@BotFather` and start a chat
-2. Send `/newbot` and follow the instructions to create a new bot
-3. Once created, you'll receive a token that looks like `123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ`
-4. To get your Chat ID, search for `@userinfobot` on Telegram and send any message. It will reply with your Chat ID.
+4. Create a `.env` file with your Telegram bot information:
+   ```
+   TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+   TELEGRAM_CHAT_ID=your_telegram_chat_id
+   ```
 
 ## Usage
 
 Run the script:
-
-```bash
+```
 python ipo_alert.py
 ```
 
 The script will:
-1. Check for new IPO entries immediately
-2. Schedule checks every 2 hours
-3. Send Telegram alerts when new IPOs are found
-4. Log all activities to `ipo_alert.log`
+1. Check for new IPO listings immediately
+2. Schedule regular checks every 2 hours
+3. Send Telegram alerts for any new IPOs found
 
-## Running as a Background Service
+## Configuration
 
-### Using systemd (Linux)
+You can modify the following parameters in the script:
+- `API_URL`: The URL of the API endpoint
+- `API_PARAMS`: Parameters for the API request
+- The check interval (default: 2 hours)
 
-Create a service file:
+## Troubleshooting
 
-```bash
-sudo nano /etc/systemd/system/ipo-alert.service
-```
+If you encounter Cloudflare protection issues:
 
-Add the following content (adjust paths accordingly):
+1. The script uses cloudscraper as the primary method to bypass protection
+2. If cloudscraper fails, it will attempt to use Playwright as a fallback
+3. Both methods include retry logic with exponential backoff
 
-```
-[Unit]
-Description=IPO Alert Service
-After=network.target
-
-[Service]
-User=your_username
-WorkingDirectory=/path/to/ipo-alert
-ExecStart=/usr/bin/python3 /path/to/ipo-alert/ipo_alert.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start the service:
-
-```bash
-sudo systemctl enable ipo-alert.service
-sudo systemctl start ipo-alert.service
-```
-
-### Using launchd (macOS)
-
-Create a plist file:
-
-```bash
-nano ~/Library/LaunchAgents/com.user.ipo-alert.plist
-```
-
-Add the following content (adjust paths accordingly):
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.user.ipo-alert</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/bin/python3</string>
-        <string>/path/to/ipo-alert/ipo_alert.py</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardErrorPath</key>
-    <string>/path/to/ipo-alert/error.log</string>
-    <key>StandardOutPath</key>
-    <string>/path/to/ipo-alert/output.log</string>
-</dict>
-</plist>
-```
-
-Load the service:
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.user.ipo-alert.plist
-```
+If you still face issues:
+- Check the logs in `ipo_alert.log`
+- Ensure you have the latest version of cloudscraper and Playwright
+- Try running with different user agents or browser settings
 
 ## License
 

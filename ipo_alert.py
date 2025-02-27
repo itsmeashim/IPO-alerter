@@ -11,12 +11,22 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple, Any
 
 import httpx
+import cloudscraper
 import schedule
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+import asyncio
+
+# Optional import of playwright for fallback
+try:
+    from playwright.async_api import async_playwright
+    HAS_PLAYWRIGHT = True
+except ImportError:
+    HAS_PLAYWRIGHT = False
+    logging.warning("Playwright not available. Fallback browser automation will not work.")
 
 # Configure logging
 logging.basicConfig(
@@ -213,29 +223,122 @@ def save_ipo_entries(entries: List[IPOEntry]) -> None:
 async def fetch_ipo_data() -> List[IPOEntry]:
     """Fetch IPO data from the API and parse it into IPOEntry objects"""
     logger.info("Fetching IPO data from API...")
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                API_URL, 
-                params=API_PARAMS, 
+    
+    MAX_RETRIES = 3
+    retry_count = 0
+    
+    # Try with cloudscraper first with retries
+    while retry_count < MAX_RETRIES:
+        try:
+            # Use cloudscraper to bypass Cloudflare protection
+            scraper = cloudscraper.create_scraper(
+                browser={
+                    'browser': 'firefox',
+                    'platform': 'darwin',
+                    'mobile': False
+                },
+                delay=10
+            )
+            
+            # Make the request with cloudscraper
+            response = scraper.get(
+                API_URL,
+                params=API_PARAMS,
                 headers=HEADERS
             )
-            response.raise_for_status()
-            data = response.json()
             
-            if "data" not in data:
-                logger.error(f"Unexpected API response: {data}")
-                return []
-            
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                    
+                    if "data" in data:
+                        entries = [IPOEntry.from_api_data(item) for item in data["data"]]
+                        logger.info(f"Fetched {len(entries)} IPO entries using cloudscraper (attempt {retry_count + 1})")
+                        return entries
+                    else:
+                        logger.warning(f"Response from cloudscraper was valid JSON but missing 'data' key (attempt {retry_count + 1})")
+                except json.JSONDecodeError:
+                    logger.warning(f"Response from cloudscraper was not valid JSON (attempt {retry_count + 1})")
+            else:
+                logger.warning(f"Cloudscraper request failed with status code {response.status_code} (attempt {retry_count + 1})")
+        
+        except Exception as e:
+            logger.warning(f"Cloudscraper failed: {e} (attempt {retry_count + 1})")
+        
+        retry_count += 1
+        if retry_count < MAX_RETRIES:
+            delay = 2 ** retry_count  # Exponential backoff
+            logger.info(f"Retrying cloudscraper in {delay} seconds...")
+            await asyncio.sleep(delay)
+    
+    # Fallback to Playwright with retries
+    logger.info("Trying fallback method with Playwright...")
+    retry_count = 0
+    
+    while retry_count < MAX_RETRIES:
+        data = await fetch_with_playwright()
+        
+        if data and "data" in data:
             entries = [IPOEntry.from_api_data(item) for item in data["data"]]
-            logger.info(f"Fetched {len(entries)} IPO entries from API")
+            logger.info(f"Fetched {len(entries)} IPO entries using Playwright fallback (attempt {retry_count + 1})")
             return entries
-    except httpx.RequestError as e:
-        logger.error(f"Error fetching IPO data: {e}")
-        return []
-    except json.JSONDecodeError as e:
-        logger.error(f"Error parsing API response: {e}")
-        return []
+        
+        retry_count += 1
+        if retry_count < MAX_RETRIES:
+            delay = 2 ** retry_count  # Exponential backoff
+            logger.info(f"Retrying Playwright in {delay} seconds...")
+            await asyncio.sleep(delay)
+    
+    logger.error("All methods failed to fetch IPO data after maximum retries")
+    return []
+
+async def fetch_with_playwright() -> Optional[Dict[str, Any]]:
+    """Fetch IPO data using Playwright browser automation to bypass Cloudflare"""
+    if not HAS_PLAYWRIGHT:
+        logger.error("Playwright not available. Cannot use browser fallback.")
+        return None
+    
+    logger.info("Attempting to fetch IPO data using Playwright...")
+    try:
+        async with async_playwright() as p:
+            browser = await p.firefox.launch(headless=True)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0"
+            )
+            page = await context.new_page()
+            
+            # Construct URL with query parameters
+            params_str = "&".join([f"{k}={v}" for k, v in API_PARAMS.items()])
+            full_url = f"{API_URL}?{params_str}"
+            
+            # Navigate to the page and wait for network idle
+            logger.info(f"Navigating to {full_url}")
+            await page.goto(full_url, wait_until="networkidle")
+            
+            # Wait a bit to make sure any challenges are completed
+            await asyncio.sleep(5)
+            
+            # Check if we got JSON content
+            content = await page.content()
+            if "application/json" in content or "{" in content:
+                # Extract JSON from the page
+                json_content = await page.evaluate("() => document.body.textContent")
+                
+                try:
+                    data = json.loads(json_content)
+                    logger.info("Successfully fetched data with Playwright")
+                    await browser.close()
+                    return data
+                except json.JSONDecodeError:
+                    logger.error("Failed to parse JSON from Playwright response")
+            else:
+                logger.error("Playwright response was not JSON")
+            
+            await browser.close()
+            return None
+    except Exception as e:
+        logger.error(f"Error using Playwright: {e}")
+        return None
 
 async def send_telegram_alert(entry: IPOEntry) -> bool:
     """Send a Telegram alert for a new IPO entry"""
@@ -303,6 +406,25 @@ async def check_for_new_ipos() -> None:
     else:
         logger.info("No new IPO entries found")
 
+def install_playwright_browsers():
+    """Install Playwright browsers if available but not installed"""
+    if not HAS_PLAYWRIGHT:
+        return
+    
+    import subprocess
+    import sys
+    
+    try:
+        logger.info("Checking if Playwright browsers are installed...")
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "firefox"],
+            check=True,
+            capture_output=True
+        )
+        logger.info("Playwright browser installation completed.")
+    except subprocess.SubprocessError as e:
+        logger.error(f"Failed to install Playwright browsers: {e}")
+
 async def main() -> None:
     """Main function to run the IPO alert system"""
     logger.info("Starting IPO Alert System")
@@ -310,19 +432,26 @@ async def main() -> None:
     # Setup database
     setup_database()
     
+    # Install Playwright browsers if needed
+    install_playwright_browsers()
+    
     # Initial check
     await check_for_new_ipos()
     
     logger.info("Initial check completed. Scheduling regular checks every 2 hours.")
     
+    # Run the scheduler in a separate thread to avoid blocking the event loop
+    def run_check_wrapper():
+        """Wrapper to run the async check function from the scheduler"""
+        asyncio.run(check_for_new_ipos())
+    
     # Schedule regular checks every 2 hours
-    schedule.every(2).hours.do(lambda: asyncio.run(check_for_new_ipos()))
+    schedule.every(2).hours.do(run_check_wrapper)
     
     # Run the scheduler
     while True:
         schedule.run_pending()
-        time.sleep(60)  # Sleep for 1 minute between checks
+        await asyncio.sleep(60)  # Sleep for 1 minute between checks, using async sleep
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main()) 
